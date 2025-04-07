@@ -1,36 +1,32 @@
 package myproject
 
 import chisel3._
+import chisel3.stage.ChiselStage
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
-// Define the module to test LightLogic
+//State change logic
 class LogicModule extends Module {
   val io = IO(new Bundle {
     val state = Input(UInt(2.W))
     val cntIn = Input(UInt(4.W))
     val rst = Input(Bool())
-    val dly = Input(UInt(4.W))
+    val dly = Input(UInt(4.W)) // time of tick
     val cntOut = Output(UInt(4.W))
     val nextState = Output(UInt(2.W))
   })
-  val inter = Wire(UInt(2.W))
 
-  when(io.rst){
+
+  when(io.cntIn > io.dly/2.U && io.state === 2.U){
+    io.nextState := 0.U // when yelow & half of delay go red
     io.cntOut := 0.U
-    io.nextState := 0.U
-    inter := 0.U
-
-  }otherwise{
-    inter := Logic.LightLogic(state = io.state, cnt = io.cntIn, dly = io.dly)
-
-    when(inter =/= io.state) {
-      io.cntOut := 0.U
-    } otherwise {
-      io.cntOut := io.cntIn
-    }
-
-    io.nextState := inter
+  }.elsewhen(io.cntIn > io.dly) {  // Use .elsewhen with dot notation
+    io.cntOut := 0.U
+    io.nextState := Mux(io.state === 0.U, 1.U, 2.U) // state change logic
+  } .otherwise {              // Handle all other cases
+    io.cntOut := io.cntIn     // Pass through cntIn
+    io.nextState := io.state  // Preserve current state
+    //inter := io.state         // Example: inter mirrors state
   }
 }
 
@@ -51,9 +47,7 @@ class Upd8Module extends Module {
   }otherwise{
     state := io.ns
     cnt := io.cntIn + 1.U // add 2 register so wait for clk
-
     io.cntOut := cnt // update to new on clock
-
     io.cs := state
 
   }
@@ -72,8 +66,7 @@ class Light extends Module {
   val upd8 = Module(new Upd8Module())
   val log = Module(new LogicModule())
 
-
-  //connect states
+    //connect states
   log.io.state := upd8.io.cs
   upd8.io.ns := log.io.nextState
   //connect counts
@@ -98,8 +91,9 @@ class perpLight extends Module {    // 'slave' light  gets its state from  'mast
     val dly = Input(UInt(4.W))
     val slvstate  = Output(UInt(4.W))
   })
+  // delay is not connected
 
-  when(io.mstate > 0.U){
+  when(io.mstate =/= 0.U){
     io.slvstate := 0.U
 
   }otherwise{
@@ -114,20 +108,28 @@ class perpLight extends Module {    // 'slave' light  gets its state from  'mast
   }
 }
 
+
+//successful
 class LogicTest extends AnyFlatSpec with ChiselScalatestTester {
   "allIn" should "cycle through states correctly" in {
     test(new Light).withAnnotations(Seq(WriteVcdAnnotation)) { c =>
+      // enter a delay
+      c.io.delay.poke(6.U)
       // Reset the system
       c.io.rst.poke(1.B)
       c.clock.step(1)
 
       // Check initial state (Red)
-      c.io.state.expect(0.U, "Should start in Red after reset")
+      c.io.state.expect(0.U, "Should start in Red after reset") // switches to 1 after first cycle
       c.io.cnt.expect(0.U, "Counter should be 0 after reset")
       c.io.rst.poke(0.B)
 
+      //reach here no problem
+
       // Step through Red state (should stay Red until cnt > 6)
-      for (i <- 1 to 6) {
+      for (i <- 1 to 7) {
+
+        // starting at green
         c.io.state.expect(0.U, s"Should stay in Red at cycle $i")
         c.io.cnt.expect(i.U, s"Counter should be $i")
         c.clock.step(1)
@@ -135,9 +137,10 @@ class LogicTest extends AnyFlatSpec with ChiselScalatestTester {
 
       // Next cycle: Transition to Green
 
-      c.clock.step(1)
+
+      c.io.cnt.expect(1.U, "Counter reset to 0 then step to 1")  // counter is not resetting.
       c.io.state.expect(1.U, "Should transition to Green when cnt > 6")
-      c.io.cnt.expect(1.U, "Counter should reset to 0")
+
 
       // Step through Green state (cnt > 6 to Yellow)
       for (i <- 1 to 6) {
@@ -166,3 +169,7 @@ class LogicTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 }
+
+//object LightApp extends App {
+  //(new chisel3.stage.ChiselStage).emitVerilog(new Light(), Array("--target-dir", "verilog_output"))
+//}
